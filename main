@@ -1,0 +1,618 @@
+#define MAX2(a, b) (a > b) ? a : b
+#define MIN2(a, b) (a < b) ? a : b
+#define MAX3(a, b, c) MAX2(a, MAX2(b, c))
+#define MIN3(a, b, c) MIN2(a, MIN2(b, c))
+#define chunk_size 1
+#define _CRT_SECURE_NO_WARNINGS
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <omp.h>
+
+void P5(FILE* fd, const char* filename_out, float k, double *t)
+{
+    unsigned int width, height, maxval;
+    unsigned char* image;
+    int i;
+    int result;
+    if (fscanf(fd, "%d %d %d", &width, &height, &maxval) != 3) {
+
+        fclose(fd);
+        exit(1);
+    }
+    char a_;
+    fscanf(fd, "%c", &a_);
+    if (maxval > 255) {
+
+        fclose(fd);
+        exit(1);
+    }
+    if (maxval > 255) {
+
+        fclose(fd);
+        exit(1);
+    }
+
+    // read image data
+    image = malloc(width * height);
+    if (!image) {
+        fprintf(stderr, "Unable to allocate memory\n");
+        exit(1);
+    }
+
+    if (fread(image, sizeof(unsigned char), width * height, fd) != width * height * sizeof(unsigned char)) {
+        printf("could not read image\n");
+        fclose(fd);
+        free(image);
+        exit(1);
+    }
+    fclose(fd);
+    unsigned int* histo;
+    histo = (unsigned int*)calloc(maxval + 1, sizeof(int));
+    if (histo == NULL) {
+        fprintf(stderr, "Unable to allocate memory\n");
+        free(image);
+        exit(1);
+    }
+    *t = omp_get_wtime();
+    for (i = 0; i < width * height; i++)
+        histo[image[i]]++;
+
+    //new max_val min_val
+
+    unsigned int pix_red = width * height * k;
+   int sum = 0; i = -1;
+    while (sum <= pix_red)
+    {
+        i++;
+        sum += histo[i];
+    }
+    unsigned int min_val = i;
+    sum = 0; i = 256;
+    while (sum <= pix_red)
+    {
+        i--;
+        sum += histo[i];
+    }
+    unsigned int max_val = i;
+
+    for (i = 0; i < width * height; i++)
+    {
+        int y_new = (image[i] - min_val) * 255 / (max_val - min_val);
+        if (y_new > 255) image[i] = 255;
+        else if (y_new < 0) image[i] = 0;
+        else image[i] = (unsigned int)y_new;
+    }
+    *t = omp_get_wtime() - *t;
+    //open file for output
+    FILE* fp;
+    fp = fopen(filename_out, "wb");
+    if (!fp) {
+        fprintf(stderr, "Unable to open file '%s'\n", filename_out);
+        free(image);
+        free(histo);
+        exit(1);
+    }
+    //write the header file
+//image format
+    fprintf(fp, "P5\n");
+
+    //image size
+    fprintf(fp, "%d %d\n", width, height);
+
+    // rgb component depth
+    fprintf(fp, "%d\n", maxval);
+    fwrite(image, sizeof(unsigned char), width * height, fp);
+    fclose(fp);
+    free(image);
+    free(histo);
+
+    }
+void P5_par(FILE* fd, const char* filename_out, float k, int num_threads, int* real_threads, double* t)
+{
+    unsigned int width, height, maxval;
+    unsigned char* image;
+    int i;
+    int result;
+    int real = omp_get_max_threads();
+    if (num_threads != 0)
+    {
+        omp_set_num_threads(num_threads);
+        real = num_threads;
+    }
+
+    if (fscanf(fd, "%d %d %d", &width, &height, &maxval) != 3)
+    {
+        fclose(fd);
+        exit(1);
+    }
+    char a_;
+    fscanf(fd, "%c", &a_);
+    if (maxval > 255) {
+        fclose(fd);
+        exit(1);
+    }
+
+    // read image data
+    image = malloc(width * height);
+    if (!image) {
+        fprintf(stderr, "Unable to allocate memory\n");
+        exit(1);
+    }
+
+    if (fread(image, sizeof(unsigned char), width * height, fd) != width * height * sizeof(unsigned char)) {
+        printf("could not read image\n");
+        fclose(fd);
+        free(image);
+        exit(1);
+    }
+    fclose(fd);
+    unsigned int* histo;
+    histo = (unsigned int*)calloc(maxval + 1, sizeof(int));
+    if (histo == NULL ) {
+        fprintf(stderr, "Unable to allocate memory\n");
+        result = 1;
+        free(image);
+        exit(1);
+    }
+    unsigned int* local_histo = calloc(real * (maxval + 1), sizeof(unsigned int));
+    if (local_histo == NULL) {
+        fprintf(stderr, "Unable to allocate memory\n");
+        free(image);
+        free(histo);
+        exit(1);
+    }
+    *t = omp_get_wtime();
+#pragma omp parallel 
+    {
+        int thread_num = omp_get_thread_num();
+        unsigned int* local_histo_thread = &local_histo[thread_num * (maxval + 1)];
+
+#pragma omp for schedule(static,chunk_size)
+        for (i = 0; i < width * height; i++) {
+            local_histo_thread[image[i]]++;
+        }
+#pragma omp critical
+        {
+            for (i = 0; i <= maxval; i++) {
+
+                histo[i] += local_histo_thread[i];
+            }
+        }
+
+        //new max_val min_val
+
+        unsigned int pix_red = width * height * k;
+        int sum = 0; i = -1;
+        while (sum <= pix_red)
+        {
+            i++;
+            sum += histo[i];
+        }
+        unsigned int min_val = i;
+        sum = 0; i = 256;
+        while (sum <= pix_red)
+        {
+            i--;
+            sum += histo[i];
+        }
+        unsigned int max_val = i;
+
+#pragma omp for schedule(static,chunk_size) 
+        for (i = 0; i < width * height; i++) {
+            int y_new = (image[i] - min_val) * 255 / (max_val - min_val);
+            if (y_new > 255) image[i] = 255;
+            else if (y_new < 0) image[i] = 0;
+            else image[i] = (unsigned int)y_new;
+        }
+
+     *real_threads = omp_get_num_threads();
+    }
+    *t = omp_get_wtime() - *t;
+    //open file for output
+    FILE* fp;
+    fp = fopen(filename_out, "wb");
+    if (!fp) {
+        fprintf(stderr, "Unable to open file '%s'\n", filename_out);
+        free(image);
+        free(histo);
+        free(local_histo);
+        exit(1);
+    }
+    //write the header file
+//image format
+    fprintf(fp, "P5\n");
+
+    //image size
+    fprintf(fp, "%d %d\n", width, height);
+
+    // rgb component depth
+    fprintf(fp, "%d\n", maxval);
+    fwrite(image, sizeof(unsigned char), width * height, fp);
+    fclose(fp);
+    free(image);
+    free(histo);
+    free(local_histo);
+
+}
+void P6_par(FILE* fd, const char* filename_out, float k, int num_threads, int * real_threads, double *t)
+{
+    unsigned int width, height, maxval;
+    unsigned char* image;
+    int i;
+    int result;
+    int real = omp_get_max_threads();
+    if (num_threads != 0)
+    {
+        omp_set_num_threads(num_threads);
+        real = num_threads;
+    }
+
+    if (fscanf(fd, "%d %d %d", &width, &height, &maxval) != 3) {
+        fclose(fd);
+        exit(1);
+    }
+    char a_;
+    fscanf(fd, "%c", &a_);
+    if (maxval > 255) {
+        fclose(fd);
+        exit(1);
+    }
+
+    // read image data
+    image = malloc(width * height * 3);
+    fread(image, sizeof(unsigned char), width * height * 3, fd);
+    if (!image) {
+        fprintf(stderr, "Unable to allocate memory\n");
+        exit(1);
+    }
+    fclose(fd);
+    unsigned int* histoR;
+    unsigned int* histoG;
+    unsigned int* histoB;
+    histoR = (unsigned int*)calloc(maxval + 1, sizeof(unsigned int));
+    histoG = (unsigned int*)calloc(maxval + 1, sizeof(unsigned int));
+    histoB = (unsigned int*)calloc(maxval + 1, sizeof(unsigned int));
+    if (histoR==NULL || histoG==NULL || histoB == NULL) {
+        fprintf(stderr, "Unable to allocate memory\n");
+        free(image);
+        exit(1);
+    }
+    unsigned int* local_histoR = calloc(real * (maxval + 1), sizeof(unsigned int));
+    unsigned int* local_histoG = calloc(real * (maxval + 1), sizeof(unsigned int));
+    unsigned int* local_histoB = calloc(real * (maxval + 1), sizeof(unsigned int));
+    if (local_histoR == NULL || local_histoG == NULL || local_histoB == NULL) {
+        fprintf(stderr, "Unable to allocate memory\n");
+        free(image);
+        free(histoR);
+        free(histoG);
+        free(histoB);
+        exit(1);
+    }
+    *t = omp_get_wtime();
+
+#pragma omp parallel 
+    {
+                int thread_num = omp_get_thread_num();
+                unsigned int* local_histoR_thread = &local_histoR[thread_num * (maxval + 1)];
+                unsigned int* local_histoG_thread = &local_histoG[thread_num * (maxval + 1)];
+                unsigned int* local_histoB_thread = &local_histoB[thread_num * (maxval + 1)];
+ 
+        #pragma omp for schedule(static,chunk_size)
+                for (i = 0; i < width*height*3; i= i+3) {
+                    local_histoR_thread[image[i]]++;
+                    local_histoG_thread[image[i+1]]++;
+                    local_histoB_thread[image[i+2]]++;
+                }
+
+        #pragma omp critical
+                {
+                    for (i = 0; i <= maxval; i++) {
+                      
+                            histoR[i] += local_histoR_thread[i];
+        
+                            histoG[i] += local_histoG_thread[i];
+         
+                            histoB[i] += local_histoB_thread[i];
+
+                    }
+                }
+
+        int pix_red = width * height * k;
+        int sum = 0; i = -1;
+        while (sum <= pix_red)
+        {
+            i++;
+            sum += histoR[i];
+        }
+        int min_val_R = i;
+        sum = 0; i = 256;
+        while (sum <= pix_red)
+        {
+            i--;
+            sum += histoR[i];
+        }
+        int max_val_R = i;
+        sum = 0; i = -1;
+        while (sum < pix_red)
+        {
+            i++;
+            sum += histoG[i];
+        }
+        int min_val_G = i;
+        sum = 0; i = 256;
+        while (sum <= pix_red)
+        {
+            i--;
+            sum += histoG[i];
+        }
+        int max_val_G = i;
+        sum = 0; i = -1;
+        while (sum < pix_red)
+        {
+            i++;
+            sum += histoB[i];
+        }
+        int min_val_B = i;
+        sum = 0; i = 256;
+        while (sum <= pix_red)
+        {
+            i--;
+            sum += histoB[i];
+        }
+        int max_val_B = i;
+
+        int min_val = MIN3(min_val_R, min_val_G, min_val_B);
+        int max_val = MAX3(max_val_R, max_val_B, max_val_G);
+
+#pragma omp for schedule(static, chunk_size)
+
+        for (i = 0; i < width * height * 3; i++)
+        {
+            int y_new = (image[i] - min_val) * 255 / (max_val - min_val);
+            if (y_new > 255) image[i] = 255;
+            else if (y_new < 0) image[i] = 0;
+            else image[i] = (unsigned int)y_new;
+
+        }
+
+        *real_threads = omp_get_num_threads();
+
+    }
+    *t = omp_get_wtime() - *t;
+    
+    FILE* fp;
+    //open file for output
+
+    fp = fopen(filename_out, "wb");
+    if (!fp) {
+        fprintf(stderr, "Unable to open file '%s'\n", filename_out);
+        free(image);
+        free(histoR);
+        free(histoG);
+        free(histoB);
+        free(local_histoR);
+        free(local_histoG);
+        free(local_histoB);
+        exit(1);
+    }
+
+    //write the header file
+    //image format
+    fprintf(fp, "P6\n");
+
+    //image size
+    fprintf(fp, "%d %d\n", width, height);
+
+    // rgb component depth
+    fprintf(fp, "%d\n", maxval);
+    fwrite(image, sizeof(unsigned char), width * height * 3, fp);
+    fclose(fp);
+    free(image);
+    free(histoR);
+    free(histoG);
+    free(histoB);
+    free(local_histoR);
+    free(local_histoG);
+    free(local_histoB);
+
+}
+void P6(FILE* fd, const char* filename_out, float k, double* t)
+{
+    unsigned int width, height, maxval;
+    unsigned char* image;
+    int i;
+    int result;
+
+    if (fscanf(fd, "%d %d %d", &width, &height, &maxval) != 3) {
+        printf("invalid header\n");
+        fclose(fd);
+        exit(1);
+    }
+    char a_;
+    fscanf(fd, "%c", &a_);
+    if (maxval > 255) {
+        printf("sorry, only 8-bit PGMs are supported at this time!\n");
+        fclose(fd);
+        exit(1);
+    }
+
+    // read image data
+    image = malloc(width * height * 3);
+    if (!image) {
+        fprintf(stderr, "Unable to allocate memory\n");
+        exit(1);
+    }
+    fread(image, sizeof(unsigned char), width * height * 3, fd);
+
+    fclose(fd);
+    unsigned int* histoR;
+    unsigned int* histoG;
+    unsigned int* histoB;
+    histoR = (unsigned int*)calloc(maxval + 1, sizeof(unsigned int));
+    histoG = (unsigned int*)calloc(maxval + 1, sizeof(unsigned int));
+    histoB = (unsigned int*)calloc(maxval + 1, sizeof(unsigned int));
+    if (histoR == NULL || histoG == NULL || histoB == NULL) {
+        fprintf(stderr, "Unable to allocate memory\n");
+        free(image);
+        exit(1);
+    }
+    *t = omp_get_wtime();
+
+        for (i = 0; i < width * height * 3; i = i + 3) {
+
+            histoR[image[i]]++;
+            histoG[image[i + 1]]++;
+            histoB[image[i + 2]]++;
+
+        }
+
+        int pix_red = width * height * k;
+        int sum = 0; i = -1;
+        while (sum < pix_red)
+        {
+            i++;
+            sum += histoR[i];
+        }
+        int min_val_R = i;
+        sum = 0; i = 256;
+        while (sum < pix_red)
+        {
+            i--;
+            sum += histoR[i];
+        }
+        int max_val_R = i;
+        sum = 0; i = -1;
+        while (sum < pix_red)
+        {
+            i++;
+            sum += histoG[i];
+        }
+        int min_val_G = i;
+        sum = 0; i = 256;
+        while (sum < pix_red)
+        {
+            i--;
+            sum += histoG[i];
+        }
+        int max_val_G = i;
+        sum = 0; i = -1;
+        while (sum < pix_red)
+        {
+            i++;
+            sum += histoB[i];
+        }
+        int min_val_B = i;
+        sum = 0; i = 256;
+        while (sum < pix_red)
+        {
+            i--;
+            sum += histoB[i];
+        }
+        int max_val_B = i;
+
+        int min_val = MIN3(min_val_R, min_val_G, min_val_B);
+        int max_val = MAX3(max_val_R, max_val_B, max_val_G);
+
+        for (i = 0; i < width * height * 3; i++)
+        {
+            int y_new = (image[i] - min_val) * 255 / (max_val - min_val);
+            if (y_new > 255) image[i] = 255;
+            else if (y_new < 0) image[i] = 0;
+            else image[i] = (unsigned int)y_new;
+
+        }
+
+    *t = omp_get_wtime() - *t;
+
+    FILE* fp;
+    //open file for output
+
+    fp = fopen(filename_out, "wb");
+    if (!fp) {
+        fprintf(stderr, "Unable to open file '%s'\n", filename_out);
+        free(image);
+        free(histoR);
+        free(histoG);
+        free(histoB);
+        exit(1);
+    }
+
+    //write the header file
+    //image format
+    fprintf(fp, "P6\n");
+
+    //image size
+    fprintf(fp, "%d %d\n", width, height);
+
+    // rgb component depth
+    fprintf(fp, "%d\n", maxval);
+    fwrite(image, sizeof(unsigned char), width * height * 3, fp);
+    fclose(fp);
+    free(image);
+    free(histoR);
+    free(histoG);
+    free(histoB);
+}
+    int main(int argc, char* argv[])
+    {
+
+        int num_threads = atoi(argv[3]);
+        float k = atof(argv[4]);
+
+        FILE* fd;
+        fd = fopen(argv[1], "rb");
+        if (fd == NULL) {
+            fprintf(stderr, "could not open image file\n");
+            exit(1);
+        }
+        char line[100];
+        // check format
+        fgets(line, sizeof(line), fd);
+        
+        if (strcmp(line, "P5\n") == 0)
+        {
+            if (num_threads == -1)
+            {
+                
+                double t; 
+                P5(fd, argv[2], k, &t);
+                
+                printf("Time(% i thread(s)) : % g ms\n", num_threads, t);
+            }
+            else
+            {
+                int real_threads;
+                double t;
+                P5_par(fd, argv[2], k, num_threads, &real_threads, &t);
+                printf("Time(% i thread(s)) : % g ms\n", real_threads, t);
+            }
+        }
+    
+    else if (strcmp(line, "P6\n") == 0)
+    {
+            if (num_threads == -1)
+            {
+                double t;
+                P6(fd, argv[2], k, &t);
+                
+                printf("Time(% i thread(s)) : % g ms\n", num_threads, t);
+            }
+            else
+            {
+                int real_threads;
+                double t;
+                P6_par(fd, argv[2], k, num_threads, &real_threads, &t);
+                printf("Time(% i thread(s)) : % g ms\n", num_threads, t);
+            }
+
+    }
+    else
+    {
+        fprintf(stderr, "image is not in PNM format\n");
+        fclose(fd);
+        exit(1);
+    }
+
+}
+        
